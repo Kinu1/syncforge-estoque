@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Diagnostics.Metrics;
 using Microsoft.Extensions.Logging;
 
@@ -95,7 +94,8 @@ public sealed class SyncWorker(
     {
         try
         {
-            for (var processed = 0; processed < StockCsv.MaxRows; processed++)
+            var processed = 0;
+            for (; processed < StockCsv.MaxRows; processed++)
             {
                 var claim = await TakeAsync(sessionId, ct);
                 if (claim is null)

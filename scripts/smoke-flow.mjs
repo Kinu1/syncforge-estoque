@@ -2,7 +2,9 @@ import assert from 'node:assert/strict'
 import { createHash, randomUUID } from 'node:crypto'
 import { setTimeout as delay } from 'node:timers/promises'
 
-const base = new URL(process.argv[2] ?? 'http://127.0.0.1:8080')
+const args = process.argv.slice(2)
+const mixed = args.includes('--mixed')
+const base = new URL(args.find((arg) => arg !== '--mixed') ?? 'http://127.0.0.1:8080')
 
 function createClient() {
   let cookie
@@ -35,48 +37,65 @@ function createClient() {
   }
 }
 
-const operator = createClient()
-assert.equal((await operator('/demo/session', { method: 'POST' })).status, 200)
+async function prepareStock(operator) {
+  if (mixed) {
+    const scenario = await operator('/demo/scenario', { method: 'POST', value: { scenario: 'mixed' } })
+    assert.equal(scenario.status, 204, JSON.stringify(scenario.payload))
+    return
+  }
 
-const imported = await operator('/imports', {
-  method: 'POST',
-  value: {
-    capturedAt: new Date().toISOString(),
-    csv: 'sku,physical_quantity,reserved_quantity\nDEMO-001,12,5\n',
-  },
-})
-assert.equal(imported.status, 201, JSON.stringify(imported.payload))
-assert.deepEqual(imported.payload.errors, [])
-assert.equal(imported.payload.rows[0].availableQuantity, 7)
-assert.equal((await operator('/imports/' + imported.payload.id + '/confirm', { method: 'POST' })).status, 204)
+  const imported = await operator('/imports', {
+    method: 'POST',
+    value: {
+      capturedAt: new Date().toISOString(),
+      csv: 'sku,physical_quantity,reserved_quantity\nDEMO-001,12,5\n',
+    },
+  })
+  assert.equal(imported.status, 201, JSON.stringify(imported.payload))
+  assert.deepEqual(imported.payload.errors, [])
+  assert.equal(imported.payload.rows[0].availableQuantity, 7)
+
+  const confirmed = await operator('/imports/' + imported.payload.id + '/confirm', { method: 'POST' })
+  assert.equal(confirmed.status, 204)
+}
+
+const operator = createClient()
+const started = await operator('/demo/session', { method: 'POST' })
+assert.equal(started.status, 200, JSON.stringify(started.payload))
+await prepareStock(operator)
 
 const divergences = await operator('/divergences')
 assert.equal(divergences.status, 200)
-const row = divergences.payload.find((row) => row.sku === 'DEMO-001')
-assert.equal(row.availableQuantity, 7)
-assert.equal(row.status, 'divergent')
+const pending = divergences.payload.filter((row) => row.status === 'divergent')
+const expected = mixed ? ['conflict', 'synchronized', 'synchronized'] : ['synchronized']
+assert.equal(pending.length, expected.length)
+assert.equal(pending.find((row) => row.sku === 'DEMO-001').availableQuantity, 7)
+const items = pending.map(({ sku, revision, observedVersion }) => ({ sku, revision, observedVersion }))
 
 const key = randomUUID()
-const items = [{ sku: row.sku, revision: row.revision, observedVersion: row.observedVersion }]
 const created = await operator('/sync-batches', { method: 'POST', value: { items }, key })
 assert.equal(created.status, 202, JSON.stringify(created.payload))
 const batchPath = '/sync-batches/' + encodeURIComponent(created.payload.id)
 const replay = await operator('/sync-batches', { method: 'POST', value: { items }, key })
 assert.equal(replay.payload?.id, created.payload.id)
 
-const deadline = Date.now() + 30_000
-let item
+const deadline = Date.now() + (mixed ? 85_000 : 30_000)
+let result
+let statuses
 do {
-  const result = await operator(batchPath)
+  result = await operator(batchPath)
   assert.equal(result.status, 200)
-  item = result.payload.items[0]
-  if (item.status === 'synchronized') break
-  await delay(600)
+  statuses = result.payload.items.map((item) => item.status).sort()
+  if (statuses.join(',') === expected.join(',')) break
+  await delay(mixed ? 1_500 : 600)
 } while (Date.now() < deadline)
-assert.equal(item.status, 'synchronized', JSON.stringify(item))
-assert.ok(item.attempts.length > 0)
+assert.deepEqual(statuses, expected, JSON.stringify(result.payload))
+assert.ok(result.payload.items.every((item) => item.attempts.length > 0))
 
 const visitor = createClient()
 assert.equal((await visitor('/demo/session', { method: 'POST' })).status, 200)
 assert.equal((await visitor(batchPath)).status, 404)
-console.log('Importação, confirmação do estoque, repetição idempotente e isolamento verificados.')
+
+console.log(mixed
+  ? 'Lote misto confirmado, repetição idempotente e sessões isoladas.'
+  : 'Importação, confirmação do estoque, repetição idempotente e isolamento verificados.')

@@ -79,7 +79,7 @@ public sealed class DynamoSessionStore : ISessionStore, IDisposable
         _settings = settings;
         _db = settings.Endpoint is null
             ? new AmazonDynamoDBClient()
-            : new AmazonDynamoDBClient(new BasicAWSCredentials("syncforgelocal", "syncforge-local"), new AmazonDynamoDBConfig
+            : new AmazonDynamoDBClient(new BasicAWSCredentials("syncforgelocal", "syncforgelocal"), new AmazonDynamoDBConfig
             {
                 ServiceURL = settings.Endpoint,
                 AuthenticationRegion = "us-east-1"
@@ -200,11 +200,14 @@ public sealed class DynamoSessionStore : ISessionStore, IDisposable
 
     public async Task<IReadOnlyList<string>> FindDueAsync(DateTimeOffset now, CancellationToken ct)
     {
-        var result = await _db.QueryAsync(new QueryRequest
+        const int limit = 50;
+        var due = new List<string>(limit);
+        var nowInSeconds = now.ToUnixTimeSeconds();
+        var request = new QueryRequest
         {
             TableName = Table,
             IndexName = _settings.DueIndex,
-            Limit = 50,
+            Limit = limit,
             KeyConditionExpression = "duePk = :partition and dueSk <= :now",
             ProjectionExpression = "pk",
             ExpressionAttributeValues = new()
@@ -212,8 +215,39 @@ public sealed class DynamoSessionStore : ISessionStore, IDisposable
                 [":partition"] = String(DuePartition),
                 [":now"] = String(DueKey(now))
             }
-        }, ct);
-        return result.Items?.Select(item => item["pk"].S[SessionPrefix.Length..]).ToArray() ?? [];
+        };
+
+        do
+        {
+            var page = await _db.QueryAsync(request, ct);
+            foreach (var item in page.Items ?? [])
+            {
+                var sessionId = item["pk"].S[SessionPrefix.Length..];
+
+                // TTL removes expired sessions asynchronously. Read only their expiration
+                // so stale index entries cannot occupy all available reconciliation slots.
+                var session = await _db.GetItemAsync(new GetItemRequest
+                {
+                    TableName = Table,
+                    Key = SessionKey(sessionId),
+                    ProjectionExpression = "expiresAt"
+                }, ct);
+                if (session.Item is null || !session.Item.TryGetValue("expiresAt", out var expiry) ||
+                    !long.TryParse(expiry.N, CultureInfo.InvariantCulture, out var expiresAt) || expiresAt <= nowInSeconds)
+                {
+                    continue;
+                }
+
+                due.Add(sessionId);
+                if (due.Count == limit)
+                {
+                    return due;
+                }
+            }
+            request.ExclusiveStartKey = page.LastEvaluatedKey;
+        } while (request.ExclusiveStartKey is { Count: > 0 });
+
+        return due;
     }
 
     private static string DueKey(DateTimeOffset time) =>

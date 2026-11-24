@@ -44,7 +44,10 @@ builder.Services.AddRateLimiter(options =>
             return RateLimitPartition.GetNoLimiter("static");
         }
 
-        var address = context.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+        var viewerIp = context.Request.Headers["x-syncforge-client-ip"].ToString();
+        var address = lambda && System.Net.IPAddress.TryParse(viewerIp, out var ip)
+            ? ip.ToString()
+            : context.Connection.RemoteIpAddress?.ToString() ?? "unknown";
         var starting = context.Request.Path == "/api/v1/demo/session" &&
             DemoEndpoints.ReadCookie(context) is null;
         var scope = starting ? "start:" : "api:";
