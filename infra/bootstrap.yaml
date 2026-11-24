@@ -135,6 +135,9 @@ Resources:
             Version: '2012-10-17'
             Statement:
               - Effect: Allow
+                Action: cloudformation:CreateChangeSet
+                Resource: !Sub arn:${AWS::Partition}:cloudformation:${AWS::Region}:aws:transform/Serverless-2016-10-31
+              - Effect: Allow
                 Action: s3:GetObject
                 Resource: !Sub '${ArtifactBucket.Arn}/*'
               - Effect: Allow
