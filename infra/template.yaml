@@ -114,20 +114,39 @@ Resources:
         deadLetterTargetArn: !GetAtt JobsDeadLetterQueue.Arn
         maxReceiveCount: 5
 
-  QueueTransportPolicy:
+  JobsQueueTransportPolicy:
     Type: AWS::SQS::QueuePolicy
     Metadata:
       com.aws.cloudformation.Context:
-        why: Exige TLS para acesso as duas filas.
+        why: Exige transporte seguro nas chamadas diretas a esta fila.
     Properties:
-      Queues: [!Ref JobsQueue, !Ref JobsDeadLetterQueue]
+      Queues: [!Ref JobsQueue]
       PolicyDocument:
         Version: '2012-10-17'
         Statement:
           - Effect: Deny
             Principal: '*'
             Action: 'sqs:*'
-            Resource: [!GetAtt JobsQueue.Arn, !GetAtt JobsDeadLetterQueue.Arn]
+            Resource: !GetAtt JobsQueue.Arn
+            Condition:
+              Bool:
+                aws:SecureTransport: 'false'
+                aws:PrincipalIsAWSService: 'false'
+
+  DeadLetterTransportPolicy:
+    Type: AWS::SQS::QueuePolicy
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Exige transporte seguro nas chamadas diretas a esta fila.
+    Properties:
+      Queues: [!Ref JobsDeadLetterQueue]
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Deny
+            Principal: '*'
+            Action: 'sqs:*'
+            Resource: !GetAtt JobsDeadLetterQueue.Arn
             Condition:
               Bool:
                 aws:SecureTransport: 'false'
