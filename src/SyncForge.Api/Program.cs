@@ -1,5 +1,6 @@
 using System.Threading.RateLimiting;
 using Amazon.Lambda.AspNetCoreServer.Hosting;
+using SyncForge.Api;
 using SyncForge.Core;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -57,8 +58,23 @@ builder.Services.AddRateLimiter(options =>
 });
 
 var app = builder.Build();
-app.UseExceptionHandler();
-app.UseStatusCodePages();
+app.UseExceptionHandler(errors => errors.Run(context => Results.Problem(
+    statusCode: 500,
+    detail: "O SyncForge não concluiu a solicitação. Tente novamente.").ExecuteAsync(context)));
+app.UseStatusCodePages(context =>
+{
+    var http = context.HttpContext;
+    var status = http.Response.StatusCode;
+    var detail = status switch
+    {
+        400 => "A solicitação está incompleta ou tem formato inválido.",
+        413 => "O corpo da solicitação excede o limite aceito.",
+        415 => "Envie o corpo da requisição como JSON.",
+        429 => "Limite de solicitações atingido. Tente novamente em um minuto.",
+        _ => "A solicitação não pôde ser atendida."
+    };
+    return Results.Problem(statusCode: status, detail: detail).ExecuteAsync(http);
+});
 app.Use(async (context, next) =>
 {
     context.Response.Headers.XContentTypeOptions = "nosniff";

@@ -1,6 +1,6 @@
 using SyncForge.Core;
 
-namespace SyncForge.Core;
+namespace SyncForge.Api;
 
 public static class DemoEndpoints
 {
