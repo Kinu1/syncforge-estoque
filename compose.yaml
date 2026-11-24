@@ -1,0 +1,10 @@
+name: syncforge
+services:
+  dynamodb:
+    image: amazon/dynamodb-local:3.1.0
+    command: "-jar DynamoDBLocal.jar -sharedDb -dbPath ./data"
+    working_dir: /home/dynamodblocal
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - ./.local/dynamodb:/home/dynamodblocal/data
