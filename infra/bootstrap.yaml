@@ -293,6 +293,9 @@ Resources:
                 Action: [scheduler:CreateSchedule, scheduler:GetSchedule, scheduler:UpdateSchedule, scheduler:DeleteSchedule]
                 Resource: !Sub arn:${AWS::Partition}:scheduler:${AWS::Region}:${AWS::AccountId}:schedule/${AppStackName}-schedule/${AppStackName}-reconcile
               - Effect: Allow
+                Action: scheduler:DeleteSchedule
+                Resource: !Sub arn:${AWS::Partition}:scheduler:${AWS::Region}:${AWS::AccountId}:schedule/${AppStackName}-schedule/*
+              - Effect: Allow
                 Action:
                   - cloudwatch:PutMetricAlarm
                   - cloudwatch:DescribeAlarms
