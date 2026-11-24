@@ -1,0 +1,563 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: SyncForge. Demonstracao com dados ficticios de conciliacao de estoque via Lambda, DynamoDB e SQS.
+
+Metadata:
+  AWSToolsMetrics:
+    AWSAgentToolkit: aws-cloudformation@3
+
+Parameters:
+  CloudFrontMode:
+    Type: String
+    AllowedValues:
+      - pay-as-you-go
+      - free-flat-rate
+    Description: Modelo de cobranca do CloudFront, verificado antes de publicar a demonstracao.
+  FrontendOriginAccessId:
+    Type: String
+    AllowedPattern: '[A-Z0-9]+'
+    Description: ID do OAC de S3 criado pelo stack de acesso ao deploy.
+  ApiOriginAccessId:
+    Type: String
+    AllowedPattern: '[A-Z0-9]+'
+    Description: ID do OAC de Lambda criado pelo stack de acesso ao deploy.
+  RuntimePermissionsBoundaryArn:
+    Type: String
+    Description: ARN da politica de limite para as roles do demo criado no bootstrap.
+
+Conditions:
+  UseFlatRate: !Equals [!Ref CloudFrontMode, free-flat-rate]
+
+Globals:
+  Function:
+    Runtime: provided.al2023
+    Handler: bootstrap
+    Architectures:
+      - x86_64
+    Environment:
+      Variables:
+        DOTNET_SYSTEM_GLOBALIZATION_INVARIANT: '1'
+        SYNCFORGE_TABLE: !Ref InventoryTable
+        SYNCFORGE_DUE_INDEX: due-index
+        SYNCFORGE_QUEUE_URL: !Ref JobsQueue
+
+Resources:
+  InventoryTable:
+    Type: AWS::DynamoDB::Table
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Persiste a operacao do painel e o estado entregue ao marketplace simulado.
+        must: Capacidade provisionada fixa, criptografia padrao com chave da AWS e expiracao por sessao.
+    Properties:
+      BillingMode: PROVISIONED
+      TableName: !Sub ${AWS::StackName}-inventory
+      TableClass: STANDARD
+      ProvisionedThroughput:
+        ReadCapacityUnits: 15
+        WriteCapacityUnits: 15
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+        - AttributeName: sk
+          AttributeType: S
+        - AttributeName: duePk
+          AttributeType: S
+        - AttributeName: dueSk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+        - AttributeName: sk
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: due-index
+          KeySchema:
+            - AttributeName: duePk
+              KeyType: HASH
+            - AttributeName: dueSk
+              KeyType: RANGE
+          Projection:
+            ProjectionType: KEYS_ONLY
+          ProvisionedThroughput:
+            ReadCapacityUnits: 5
+            WriteCapacityUnits: 5
+      TimeToLiveSpecification:
+        AttributeName: expiresAt
+        Enabled: true
+
+  JobsDeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Guarda envelopes que esgotaram as tentativas de entrega da fila.
+    Properties:
+      QueueName: !Sub ${AWS::StackName}-jobs-dlq
+      MessageRetentionPeriod: 345600
+      SqsManagedSseEnabled: true
+      RedriveAllowPolicy:
+        redrivePermission: byQueue
+        sourceQueueArns:
+          - !Sub arn:${AWS::Partition}:sqs:${AWS::Region}:${AWS::AccountId}:${AWS::StackName}-jobs
+
+  JobsQueue:
+    Type: AWS::SQS::Queue
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Desacopla o pedido de sincronizacao do processamento, com reentrega.
+        must: A visibilidade respeita seis vezes o timeout da Lambda consumidora.
+    Properties:
+      QueueName: !Sub ${AWS::StackName}-jobs
+      VisibilityTimeout: 180
+      MessageRetentionPeriod: 86400
+      SqsManagedSseEnabled: true
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt JobsDeadLetterQueue.Arn
+        maxReceiveCount: 5
+
+  QueueTransportPolicy:
+    Type: AWS::SQS::QueuePolicy
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Exige TLS para acesso as duas filas.
+    Properties:
+      Queues: [!Ref JobsQueue, !Ref JobsDeadLetterQueue]
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Deny
+            Principal: '*'
+            Action: 'sqs:*'
+            Resource: [!GetAtt JobsQueue.Arn, !GetAtt JobsDeadLetterQueue.Arn]
+            Condition:
+              Bool:
+                aws:SecureTransport: 'false'
+                aws:PrincipalIsAWSService: 'false'
+
+  ApiLogGroup:
+    Type: AWS::Logs::LogGroup
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Garante retencao curta dos logs da API.
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${AWS::StackName}-api
+      RetentionInDays: 7
+
+  WorkerLogGroup:
+    Type: AWS::Logs::LogGroup
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Permite correlacionar operacoes e tentativas do worker.
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${AWS::StackName}-worker
+      RetentionInDays: 7
+
+  ApiRole:
+    Type: AWS::IAM::Role
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Limita a API a propria tabela, fila e grupo de logs.
+    Properties:
+      RoleName: !Sub ${AWS::StackName}-api
+      PermissionsBoundary: !Ref RuntimePermissionsBoundaryArn
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: syncforge-api
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: [logs:CreateLogStream, logs:PutLogEvents]
+                Resource: !GetAtt ApiLogGroup.Arn
+              - Effect: Allow
+                Action: [dynamodb:GetItem, dynamodb:PutItem, dynamodb:Query]
+                Resource: !GetAtt InventoryTable.Arn
+              - Effect: Allow
+                Action: sqs:SendMessage
+                Resource: !GetAtt JobsQueue.Arn
+
+  WorkerRole:
+    Type: AWS::IAM::Role
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Permite consumir a fila e consultar o indice de trabalho a reconciliar.
+    Properties:
+      RoleName: !Sub ${AWS::StackName}-worker
+      PermissionsBoundary: !Ref RuntimePermissionsBoundaryArn
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: syncforge-worker
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: [logs:CreateLogStream, logs:PutLogEvents]
+                Resource: !GetAtt WorkerLogGroup.Arn
+              - Effect: Allow
+                Action: [dynamodb:GetItem, dynamodb:PutItem, dynamodb:Query]
+                Resource: !GetAtt InventoryTable.Arn
+              - Effect: Allow
+                Action: dynamodb:Query
+                Resource: !Sub ${InventoryTable.Arn}/index/due-index
+              - Effect: Allow
+                Action:
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:GetQueueAttributes
+                  - sqs:SendMessage
+                Resource: !GetAtt JobsQueue.Arn
+
+  Api:
+    Type: AWS::Serverless::Function
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Hospeda a API ASP.NET Core na Function URL protegida por IAM.
+        must: Artefato Linux x64 self-contained com bootstrap executavel na raiz.
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-api
+      CodeUri: build/api/
+      Role: !GetAtt ApiRole.Arn
+      MemorySize: 512
+      Timeout: 15
+
+  Worker:
+    Type: AWS::Serverless::Function
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Processa mensagens e desperta trabalho pendente na reconciliacao agendada.
+        must: Artefato Linux x64 self-contained com bootstrap executavel na raiz.
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-worker
+      CodeUri: build/worker/
+      Role: !GetAtt WorkerRole.Arn
+      MemorySize: 512
+      Timeout: 30
+      Events:
+        ProcessJobs:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt JobsQueue.Arn
+            BatchSize: 1
+            ScalingConfig:
+              MaximumConcurrency: 2
+
+  ReconcileRole:
+    Type: AWS::IAM::Role
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Restringe o reconciliador agendado ao worker do stack.
+    Properties:
+      RoleName: !Sub ${AWS::StackName}-reconcile
+      PermissionsBoundary: !Ref RuntimePermissionsBoundaryArn
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: scheduler.amazonaws.com }
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+              ArnEquals:
+                aws:SourceArn: !GetAtt ReconcileGroup.Arn
+      Policies:
+        - PolicyName: syncforge-reconcile
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: lambda:InvokeFunction
+                Resource: !GetAtt Worker.Arn
+
+  ReconcileGroup:
+    Type: AWS::Scheduler::ScheduleGroup
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Isola a confianca da role de invocacao do agendador.
+    Properties:
+      Name: !Sub ${AWS::StackName}-schedule
+
+  ReconcileSchedule:
+    Type: AWS::Scheduler::Schedule
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Reenvia trabalho persistido que ficou sem um despertar valido na fila.
+    Properties:
+      Name: !Sub ${AWS::StackName}-reconcile
+      GroupName: !Ref ReconcileGroup
+      ScheduleExpression: rate(5 minutes)
+      FlexibleTimeWindow: { Mode: 'OFF' }
+      Target:
+        Arn: !GetAtt Worker.Arn
+        RoleArn: !GetAtt ReconcileRole.Arn
+        Input: '{"kind":"reconcile"}'
+        RetryPolicy:
+          MaximumEventAgeInSeconds: 300
+          MaximumRetryAttempts: 1
+
+  ApiUrl:
+    Type: AWS::Lambda::Url
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Fornece uma origem HTTP assinada para o CloudFront.
+        must: Manter AWS_IAM e limitar as permissoes a propria distribuicao.
+    Properties:
+      AuthType: AWS_IAM
+      TargetFunctionArn: !GetAtt Api.Arn
+
+  FrontendBucket:
+    Type: AWS::S3::Bucket
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Serve somente o build estatico reproduzivel a partir do Git.
+        must: Origem regional REST privada. Nunca armazena CSV de visitantes.
+    Properties:
+      BucketName: !Sub ${AWS::StackName}-web-${AWS::AccountId}-${AWS::Region}
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  FrontendBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Libera leitura dos arquivos estaticos apenas para a propria distribuicao.
+    Properties:
+      Bucket: !Ref FrontendBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Deny
+            Principal: '*'
+            Action: 's3:*'
+            Resource: [!GetAtt FrontendBucket.Arn, !Sub '${FrontendBucket.Arn}/*']
+            Condition:
+              Bool:
+                aws:SecureTransport: 'false'
+                aws:PrincipalIsAWSService: 'false'
+          - Effect: Allow
+            Principal: { Service: cloudfront.amazonaws.com }
+            Action: s3:GetObject
+            Resource: !Sub '${FrontendBucket.Arn}/*'
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/${Distribution}
+
+  SpaRoutes:
+    Type: AWS::CloudFront::Function
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Rotas da SPA voltam para index.html sem alterar erros de API ou assets.
+    Properties:
+      Name: !Sub ${AWS::StackName}-spa
+      AutoPublish: true
+      FunctionConfig:
+        Comment: Resolve rotas de navegacao do SyncForge.
+        Runtime: cloudfront-js-2.0
+      Tags:
+        - Key: SyncForgeStack
+          Value: !Ref AWS::StackName
+      FunctionCode: |
+        function handler(event) {
+          var request = event.request;
+          if (request.uri.startsWith('/api/')) {
+            request.headers['x-syncforge-client-ip'] = { value: event.viewer.ip };
+            return request;
+          }
+          var lastSegment = request.uri.split('/').pop();
+          if (!lastSegment.includes('.')) {
+            request.uri = '/index.html';
+          }
+          return request;
+        }
+
+  DemoWebAcl:
+    Type: AWS::WAFv2::WebACL
+    Condition: UseFlatRate
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: O plano de preco fixo exige uma Web ACL, usada para limitar a API por IP.
+        must: So criar quando a conta e elegivel para o plano CloudFront Free.
+    Properties:
+      Scope: CLOUDFRONT
+      DefaultAction: { Allow: {} }
+      VisibilityConfig:
+        CloudWatchMetricsEnabled: false
+        MetricName: SyncForgeEdge
+        SampledRequestsEnabled: false
+      Rules:
+        - Name: LimitarApi
+          Priority: 0
+          Action: { Block: {} }
+          VisibilityConfig:
+            CloudWatchMetricsEnabled: false
+            MetricName: SyncForgeLimiteApi
+            SampledRequestsEnabled: false
+          Statement:
+            RateBasedStatement:
+              AggregateKeyType: IP
+              Limit: 60
+              EvaluationWindowSec: 60
+              ScopeDownStatement:
+                ByteMatchStatement:
+                  FieldToMatch: { UriPath: {} }
+                  PositionalConstraint: STARTS_WITH
+                  SearchString: /api/
+                  TextTransformations:
+                    - Priority: 0
+                      Type: NONE
+
+  Distribution:
+    Type: AWS::CloudFront::Distribution
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Mesma origem HTTPS para a interface e API, com bucket e Lambda privados.
+        must: Desabilitar cache da API e usar politicas gerenciadas compativeis com o plano Free.
+    Properties:
+      Tags:
+        - Key: SyncForgeStack
+          Value: !Ref AWS::StackName
+      DistributionConfig:
+        Enabled: true
+        Comment: !Ref AWS::StackName
+        DefaultRootObject: index.html
+        WebACLId: !If [UseFlatRate, !GetAtt DemoWebAcl.Arn, !Ref AWS::NoValue]
+        Origins:
+          - Id: frontend
+            DomainName: !GetAtt FrontendBucket.RegionalDomainName
+            OriginAccessControlId: !Ref FrontendOriginAccessId
+            S3OriginConfig:
+              OriginAccessIdentity: ''
+          - Id: api
+            DomainName: !Select [2, !Split ['/', !GetAtt ApiUrl.FunctionUrl]]
+            OriginAccessControlId: !Ref ApiOriginAccessId
+            CustomOriginConfig:
+              OriginProtocolPolicy: https-only
+              OriginSSLProtocols: [TLSv1.2]
+        DefaultCacheBehavior:
+          TargetOriginId: frontend
+          ViewerProtocolPolicy: redirect-to-https
+          CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
+          Compress: true
+          FunctionAssociations:
+            - EventType: viewer-request
+              FunctionARN: !GetAtt SpaRoutes.FunctionMetadata.FunctionARN
+        CacheBehaviors:
+          - PathPattern: /api/*
+            TargetOriginId: api
+            ViewerProtocolPolicy: https-only
+            AllowedMethods: [GET, HEAD, OPTIONS, PUT, PATCH, POST, DELETE]
+            CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
+            OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac
+            FunctionAssociations:
+              - EventType: viewer-request
+                FunctionARN: !GetAtt SpaRoutes.FunctionMetadata.FunctionARN
+          - PathPattern: /assets/*
+            TargetOriginId: frontend
+            ViewerProtocolPolicy: redirect-to-https
+            CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
+            Compress: true
+
+  ApiUrlInvokePermission:
+    Type: AWS::Lambda::Permission
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Autoriza a invocacao da URL apenas ao CloudFront deste stack.
+    Properties:
+      Action: lambda:InvokeFunctionUrl
+      FunctionName: !Ref Api
+      FunctionUrlAuthType: AWS_IAM
+      Principal: cloudfront.amazonaws.com
+      SourceArn: !Sub arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/${Distribution}
+
+  ApiInvokeThroughUrlPermission:
+    Type: AWS::Lambda::Permission
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Concede a permissao complementar de invocacao apenas via URL.
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref Api
+      InvokedViaFunctionUrl: true
+      Principal: cloudfront.amazonaws.com
+      SourceArn: !Sub arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/${Distribution}
+
+  DemoPricingPlan:
+    Type: AWS::PricingPlanManager::Subscription
+    Condition: UseFlatRate
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Ativa o plano de preco fixo de zero dolares por mes para a distribuicao.
+        must: Conta elegivel, Web ACL vinculada e deploy em us-east-1.
+    Properties:
+      PlanFamily: CloudFront
+      PlanTier: FREE
+      UsageLevel: DEFAULT
+      ResourceArns:
+        - !Sub arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/${Distribution}
+        - !GetAtt DemoWebAcl.Arn
+
+  DeadLetterAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Sinaliza mensagens que exigem analise operacional.
+    Properties:
+      AlarmName: !Sub ${AWS::StackName}-dlq
+      AlarmDescription: Existe pelo menos uma mensagem na fila de falhas do SyncForge.
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt JobsDeadLetterQueue.QueueName
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+
+Outputs:
+  DemoUrl:
+    Value: !Sub https://${Distribution.DomainName}
+  FrontendBucket:
+    Value: !Ref FrontendBucket
+  DistributionId:
+    Value: !Ref Distribution
+  ApiFunctionName:
+    Value: !Ref Api
+  WorkerFunctionName:
+    Value: !Ref Worker
+  ApiOriginUrl:
+    Value: !GetAtt ApiUrl.FunctionUrl
+  JobsQueueUrl:
+    Value: !Ref JobsQueue
+  JobsDeadLetterQueueUrl:
+    Value: !Ref JobsDeadLetterQueue
+  InventoryTableName:
+    Value: !Ref InventoryTable
+  ApiLogGroupName:
+    Value: !Ref ApiLogGroup
+  WorkerLogGroupName:
+    Value: !Ref WorkerLogGroup
+  PricingPlanSubscriptionArn:
+    Condition: UseFlatRate
+    Value: !Ref DemoPricingPlan
