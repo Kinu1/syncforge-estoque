@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="src/SyncForge.Api/SyncForge.Api.csproj" />
+  <Project Path="src/SyncForge.Core/SyncForge.Core.csproj" />
+</Solution>
