@@ -59,6 +59,7 @@ jobs:
       - run: docker compose up -d --build
       - run: curl --fail --silent --show-error --retry 25 --retry-delay 1 --retry-all-errors --max-time 3 http://127.0.0.1:8080/health
       - run: node scripts/smoke-flow.mjs
+      - run: node scripts/smoke-flow.mjs --mixed
       - run: npm --prefix frontend ci
       - run: npx playwright install --with-deps chromium
         working-directory: frontend
