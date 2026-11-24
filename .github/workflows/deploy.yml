@@ -1,0 +1,119 @@
+name: Demo AWS
+
+on:
+  workflow_dispatch:
+    inputs:
+      revisao:
+        description: "SHA em main para publicar (vazio usa a revisão atual)"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: syncforge-aws-demo
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: aws-demo
+    env:
+      AWS_REGION: us-east-1
+      STACK_NAME: syncforge-demo
+      DEPLOY_REVISION: ${{ inputs.revisao }}
+      DEPLOY_ROLE: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+      CLOUDFORMATION_ROLE: ${{ vars.AWS_CLOUDFORMATION_ROLE_ARN }}
+      RUNTIME_BOUNDARY: ${{ vars.AWS_RUNTIME_BOUNDARY_ARN }}
+      ARTIFACT_BUCKET: ${{ vars.AWS_ARTIFACT_BUCKET }}
+      FRONTEND_ORIGIN_ACCESS_ID: ${{ vars.AWS_FRONTEND_ORIGIN_ACCESS_ID }}
+      API_ORIGIN_ACCESS_ID: ${{ vars.AWS_API_ORIGIN_ACCESS_ID }}
+      CLOUDFRONT_MODE: ${{ vars.AWS_CLOUDFRONT_MODE }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Conferir a revisão e as variáveis
+        shell: bash
+        run: |
+          for name in DEPLOY_ROLE CLOUDFORMATION_ROLE RUNTIME_BOUNDARY ARTIFACT_BUCKET FRONTEND_ORIGIN_ACCESS_ID API_ORIGIN_ACCESS_ID CLOUDFRONT_MODE; do
+            if [[ -z "${!name}" ]]; then
+              printf 'Variável de publicação ausente: %s\n' "$name" >&2
+              exit 1
+            fi
+          done
+
+          if [[ -n "$DEPLOY_REVISION" ]]; then
+            [[ "$DEPLOY_REVISION" =~ ^[0-9a-f]{40}$ ]]
+            git merge-base --is-ancestor "$DEPLOY_REVISION" origin/main
+            git checkout --detach "$DEPLOY_REVISION"
+          fi
+
+          echo "RELEASE_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+
+      - uses: actions/setup-dotnet@v5
+        with:
+          global-json-file: global.json
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - uses: aws-actions/setup-sam@v2
+      - name: Empacotar aplicação e frontend
+        run: |
+          bash infra/prepare-lambda.sh
+          npm --prefix frontend ci
+          npm --prefix frontend run build
+          sam validate --lint --template-file infra/template.yaml
+
+      - uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ env.DEPLOY_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Atualizar a infraestrutura
+        shell: bash
+        run: |
+          read -r account_plan account_status < <(
+            aws freetier get-account-plan-state --query '[accountPlanType,accountPlanStatus]' --output text
+          )
+          if [[ "$CLOUDFRONT_MODE" != pay-as-you-go || "$account_plan" != FREE || "$account_status" != ACTIVE ]]; then
+            echo 'A publicação automatizada usa as franquias padrão de uma conta AWS Free ativa.' >&2
+            exit 1
+          fi
+
+          sam deploy --template-file infra/template.yaml \
+            --stack-name "$STACK_NAME" \
+            --s3-bucket "$ARTIFACT_BUCKET" --s3-prefix "$STACK_NAME/$RELEASE_SHA" \
+            --role-arn "$CLOUDFORMATION_ROLE" \
+            --capabilities CAPABILITY_NAMED_IAM --no-fail-on-empty-changeset \
+            --parameter-overrides "CloudFrontMode=$CLOUDFRONT_MODE" \
+              "FrontendOriginAccessId=$FRONTEND_ORIGIN_ACCESS_ID" "ApiOriginAccessId=$API_ORIGIN_ACCESS_ID" "RuntimePermissionsBoundaryArn=$RUNTIME_BOUNDARY"
+
+      - name: Publicar e verificar a demo
+        shell: bash
+        run: |
+          frontend_bucket=$(aws cloudformation describe-stacks --stack-name "$STACK_NAME" \
+            --query "Stacks[0].Outputs[?OutputKey=='FrontendBucket'].OutputValue | [0]" --output text)
+          demo_url=$(aws cloudformation describe-stacks --stack-name "$STACK_NAME" \
+            --query "Stacks[0].Outputs[?OutputKey=='DemoUrl'].OutputValue | [0]" --output text)
+          [[ "$frontend_bucket" == syncforge-demo-web-* ]]
+          [[ "$demo_url" == https://*.cloudfront.net* ]]
+
+          aws s3 sync frontend/dist/assets "s3://$frontend_bucket/assets/" \
+            --cache-control 'public,max-age=31536000,immutable'
+          aws s3 sync frontend/dist "s3://$frontend_bucket/" --exclude 'assets/*' \
+            --cache-control 'no-cache'
+
+          curl --fail --silent --show-error --retry 12 --retry-delay 3 --retry-all-errors \
+            --output /dev/null "$demo_url"
+          curl --fail --silent --show-error "$demo_url/api/health" >/dev/null
+          origin_url=$(aws cloudformation describe-stacks --stack-name "$STACK_NAME" \
+            --query "Stacks[0].Outputs[?OutputKey=='ApiOriginUrl'].OutputValue | [0]" --output text)
+          [[ $(curl --silent --output /dev/null --write-out '%{http_code}' "${origin_url%/}/api/health") == 403 ]]
+          node scripts/smoke-flow.mjs "$demo_url" --mixed
+          printf '[Demo pública](%s) · Revisão `%s`\n' "$demo_url" "$RELEASE_SHA" >> "$GITHUB_STEP_SUMMARY"
