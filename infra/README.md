@@ -17,14 +17,19 @@ Execute o bootstrap uma vez, com uma identidade AWS autorizada a provisionar os 
 ```bash
 region=us-east-1
 stack=syncforge-demo
-bootstrap=syncforge-bootstrap
+bootstrap=syncforge-demo-bootstrap
+repo="$(gh repo view --json nameWithOwner --jq .nameWithOwner)"
+oidc_prefix="$(gh api "repos/$repo/actions/oidc/customization/sub" --jq '.sub_claim_prefix // empty')"
+oidc_subject="${oidc_prefix:-repo:$repo}:environment:aws-demo"
 
 aws cloudformation deploy --template-file infra/bootstrap.yaml \
-  --stack-name "$bootstrap" --region "$region" --capabilities CAPABILITY_IAM \
+  --stack-name "$bootstrap" --region "$region" --capabilities CAPABILITY_NAMED_IAM \
   --parameter-overrides "AppStackName=$stack" \
     "GitHubOidcProviderArn=$GITHUB_OIDC_PROVIDER_ARN" \
-    "GitHubRepository=$GITHUB_REPOSITORY" "GitHubEnvironment=aws-demo"
+    "GitHubOidcSubject=$oidc_subject"
 ```
+
+O assunto OIDC inclui os IDs imutáveis do proprietário e do repositório quando o GitHub emite esse formato. O comando consulta o prefixo configurado e vincula a confiança ao ambiente ws-demo.
 
 O output `DeployRoleArn` identifica a role assumida pelo workflow por OIDC. Essa role pode operar o stack da aplicação, ler os outputs do bootstrap e enviar artefatos aos dois buckets dedicados. Ela passa apenas a role `CloudFormationRoleArn` ao CloudFormation. A role do stack passa somente as roles prefixadas do SyncForge às Lambdas e ao Scheduler, com um limite de permissões de runtime. Os dois OACs pertencem ao bootstrap.
 
