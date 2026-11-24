@@ -9,14 +9,10 @@ Parameters:
   GitHubOidcProviderArn:
     Type: String
     AllowedPattern: 'arn:aws:iam::[0-9]{12}:oidc-provider/token[.]actions[.]githubusercontent[.]com'
-  GitHubRepository:
+  GitHubOidcSubject:
     Type: String
-    AllowedPattern: '[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+'
-    Description: Dono e nome do repositorio, com a grafia exata do subject do GitHub.
-  GitHubEnvironment:
-    Type: String
-    Default: aws-demo
-    AllowedPattern: '[A-Za-z0-9_.-]+'
+    AllowedPattern: 'repo:[A-Za-z0-9_.-]+(@[0-9]+)?/[A-Za-z0-9_.-]+(@[0-9]+)?:environment:[A-Za-z0-9_.-]+'
+    Description: Valor exato do campo sub emitido pelo GitHub para o repositório e ambiente.
   AppStackName:
     Type: String
     Default: syncforge-demo
@@ -354,7 +350,7 @@ Resources:
             Condition:
               StringEquals:
                 token.actions.githubusercontent.com:aud: sts.amazonaws.com
-                token.actions.githubusercontent.com:sub: !Sub repo:${GitHubRepository}:environment:${GitHubEnvironment}
+                token.actions.githubusercontent.com:sub: !Ref GitHubOidcSubject
       Policies:
         - PolicyName: syncforge-deploy
           PolicyDocument:
