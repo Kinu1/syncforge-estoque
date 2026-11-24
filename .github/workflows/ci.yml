@@ -46,6 +46,7 @@ jobs:
         with:
           global-json-file: global.json
       - run: dotnet build SyncForge.slnx --configuration Release
+      - run: dotnet test SyncForge.slnx --configuration Release --no-build
 
   smoke:
     name: Fluxo principal

@@ -7,6 +7,7 @@ namespace SyncForge.Core;
 public sealed class DemoService(ISessionStore store, SessionTransactions transactions)
 {
     private const int MaxBatches = 16;
+    private const int MaxBatchItems = 10;
     private const int MaxImports = 16;
     private const int MaxStocks = 150;
     private const int MaxOperations = 256;
@@ -173,9 +174,9 @@ public sealed class DemoService(ISessionStore store, SessionTransactions transac
     public Task<BatchReceipt> CreateBatchAsync(
         string sessionId, SyncSelection[]? requested, string key, CancellationToken ct)
     {
-        if (requested is not { Length: > 0 and <= StockCsv.MaxRows })
+        if (requested is not { Length: > 0 and <= MaxBatchItems })
         {
-            throw new DemoProblem(400, "Selecione entre 1 e 25 divergências.");
+            throw new DemoProblem(400, "Selecione entre 1 e 10 divergências.");
         }
 
         var selections = requested.Select(item =>
