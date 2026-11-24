@@ -2,7 +2,7 @@
 
 Painel full stack para comparar o estoque de um ERP com um marketplace simulado, corrigir saldos por SKU e acompanhar o resultado até a confirmação do destino.
 
-[Veja a demonstração em vídeo](docs/demo.webm).
+[Abra a demo na AWS](https://d2lp48f4k8ptik.cloudfront.net) · [Veja a demonstração em vídeo](docs/demo.webm)
 
 ## Executar localmente
 
