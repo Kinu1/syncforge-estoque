@@ -1,0 +1,40 @@
+:root {
+  --background: #f7f8f5;
+  --foreground: #18241e;
+  --card: #fff;
+  --card-foreground: #18241e;
+  --popover: #fff;
+  --popover-foreground: #18241e;
+  --primary: #205e43;
+  --primary-foreground: #fff;
+  --secondary: #e8f0e8;
+  --secondary-foreground: #254534;
+  --muted: #eef1eb;
+  --muted-foreground: #516158;
+  --accent: #e9f0e9;
+  --accent-foreground: #203f2e;
+  --destructive: #a62727;
+  --border: #dce2da;
+  --input: #c3cec4;
+  --ring: #2e7655;
+  --radius: .5rem;
+}
+
+@media (pointer: coarse) {
+  [data-slot="button"],
+  [data-slot="input"],
+  [data-slot="select-trigger"] {
+    min-height: 2.75rem;
+  }
+
+  [data-slot="checkbox"]::after {
+    inset: -.875rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .01ms !important;
+    transition-duration: .01ms !important;
+  }
+}

@@ -59,5 +59,17 @@ jobs:
       - run: docker compose up -d --build
       - run: curl --fail --silent --show-error --retry 25 --retry-delay 1 --retry-all-errors --max-time 3 http://127.0.0.1:8080/health
       - run: node scripts/smoke-flow.mjs
+      - run: npm --prefix frontend ci
+      - run: npx playwright install --with-deps chromium
+        working-directory: frontend
+      - run: npm --prefix frontend run test:e2e
+        env:
+          SYNCFORGE_E2E_REAL: '1'
+      - uses: actions/upload-artifact@v6
+        if: failure()
+        with:
+          name: testes-navegador
+          path: frontend/test-results/
+          if-no-files-found: ignore
       - if: failure()
         run: docker compose logs --tail 100
