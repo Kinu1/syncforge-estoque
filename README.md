@@ -61,3 +61,7 @@ npm --prefix frontend run test:e2e
 ```
 
 Ative `SYNCFORGE_E2E_REAL=1` para incluir os cenários de navegador que usam o ambiente Compose. O CI executa esses cenários junto dos testes com respostas simuladas.
+
+## Licenças de terceiros
+
+[Componentes shadcn/ui](docs/licencas/shadcn-ui.txt) · [Fonte Geist](docs/licencas/geist.txt)
