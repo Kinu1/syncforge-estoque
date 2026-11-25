@@ -4,7 +4,7 @@ test.skip(process.env.SYNCFORGE_E2E_REAL !== "1", "Requer a operação local com
 
 test("transfere duas unidades após a confirmação da redução no primeiro canal", async ({ page }) => {
   await page.goto("/")
-  await page.getByRole("link", { name: "Distribuição", exact: true }).click()
+  await page.getByRole("navigation", { name: "Navegação da operação" }).getByRole("link", { name: "Distribuição", exact: true }).click()
   await page.getByRole("button", { name: "Carregar cenário de transferência" }).click()
   await page.getByRole("dialog").getByRole("button", { name: "Carregar e substituir" }).click()
 
