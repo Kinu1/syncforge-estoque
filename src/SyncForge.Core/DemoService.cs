@@ -4,7 +4,7 @@ using System.Text.Json;
 
 namespace SyncForge.Core;
 
-public sealed class DemoService(ISessionStore store, SessionTransactions transactions)
+public sealed partial class DemoService(ISessionStore store, SessionTransactions transactions)
 {
     private const int MaxBatches = 16;
     private const int MaxBatchItems = 10;
@@ -36,20 +36,25 @@ public sealed class DemoService(ISessionStore store, SessionTransactions transac
 
     public Task ResetAsync(string sessionId, string? scenario, CancellationToken ct)
     {
-        if (scenario != "mixed")
+        if (scenario is not ("mixed" or "transfer"))
         {
-            throw new DemoProblem(400, "Escolha o cenário 'mixed'.");
+            throw new DemoProblem(400, "Escolha o cenário 'mixed' ou 'transfer'.");
         }
 
         return transactions.ChangeAsync(sessionId, state =>
         {
+            state.Allocations.Clear();
             state.Stocks.Clear();
             state.Imports.Clear();
             state.Listings.Clear();
             state.Batches.Clear();
             state.Operations.Clear();
             state.MarketplaceReceipts.Clear();
-            SeedListings(state, transactions.Now, mixed: true);
+            SeedListings(state, transactions.Now, mixed: scenario == "mixed");
+            if (scenario == "transfer")
+            {
+                SeedTransfer(state, transactions.Now);
+            }
             return (true, true);
         }, ct);
     }
@@ -120,9 +125,10 @@ public sealed class DemoService(ISessionStore store, SessionTransactions transac
     public async Task<DivergenceView[]> ReadDivergencesAsync(string sessionId, CancellationToken ct)
     {
         var state = await transactions.RequireAsync(sessionId, ct);
-        var links = state.Listings.Values.Where(item => item.Sku is not null)
+        var links = state.Listings.Values.Where(item => item.Channel == "A" && item.Sku is not null)
             .ToDictionary(item => item.Sku!, StringComparer.Ordinal);
-        return state.Stocks.Values.OrderBy(item => item.Sku, StringComparer.Ordinal).Select(stock =>
+        return state.Stocks.Values.Where(stock => !state.Allocations.ContainsKey(stock.Sku))
+            .OrderBy(item => item.Sku, StringComparer.Ordinal).Select(stock =>
         {
             links.TryGetValue(stock.Sku, out var listing);
             var status = listing is null ? "unlinked" :
@@ -137,7 +143,7 @@ public sealed class DemoService(ISessionStore store, SessionTransactions transac
     public async Task<ListingLinkView[]> ReadLinksAsync(string sessionId, CancellationToken ct)
     {
         var state = await transactions.RequireAsync(sessionId, ct);
-        return state.Listings.Values.OrderBy(item => item.Id, StringComparer.Ordinal)
+        return state.Listings.Values.Where(item => item.Channel == "A").OrderBy(item => item.Id, StringComparer.Ordinal)
             .Select(item => new ListingLinkView(item.Id, item.Name, item.Sku, item.Quantity)).ToArray();
     }
 
@@ -146,9 +152,13 @@ public sealed class DemoService(ISessionStore store, SessionTransactions transac
         var sku = StockCsv.NormalizeSku(rawSku) ?? throw new DemoProblem(400, "O SKU informado é inválido.");
         return transactions.ChangeAsync(sessionId, state =>
         {
-            if (listingId is null || !state.Listings.TryGetValue(listingId, out var listing) || !state.Stocks.ContainsKey(sku))
+            if (listingId is null || !state.Listings.TryGetValue(listingId, out var listing) || listing.Channel != "A" || !state.Stocks.ContainsKey(sku))
             {
                 throw new DemoProblem(404, "SKU ou anúncio não encontrado nesta sessão.");
+            }
+            if (state.Allocations.ContainsKey(sku))
+            {
+                throw new DemoProblem(409, "Este SKU é gerenciado no painel de distribuição.");
             }
             if (listing.Sku == sku)
             {
@@ -159,7 +169,7 @@ public sealed class DemoService(ISessionStore store, SessionTransactions transac
                 throw new DemoProblem(409, "O anúncio já está vinculado a outro SKU.");
             }
 
-            var previous = state.Listings.Values.SingleOrDefault(item => item.Sku == sku);
+            var previous = state.Listings.Values.SingleOrDefault(item => item.Channel == "A" && item.Sku == sku);
             if (previous is not null)
             {
                 previous.Sku = null;
@@ -212,8 +222,8 @@ public sealed class DemoService(ISessionStore store, SessionTransactions transac
             foreach (var selection in selections)
             {
                 var sku = selection.Sku!;
-                var listing = state.Listings.Values.SingleOrDefault(item => item.Sku == sku);
-                if (!state.Stocks.TryGetValue(sku, out var stock) || stock.Revision != selection.Revision ||
+                var listing = state.Listings.Values.SingleOrDefault(item => item.Channel == "A" && item.Sku == sku);
+                if (state.Allocations.ContainsKey(sku) || !state.Stocks.TryGetValue(sku, out var stock) || stock.Revision != selection.Revision ||
                     listing is null || listing.Version != selection.ObservedVersion || listing.Quantity == stock.AvailableQuantity)
                 {
                     throw new DemoProblem(409, $"A divergência de {sku} mudou. Revise as informações antes de criar o lote.");
@@ -255,7 +265,11 @@ public sealed class DemoService(ISessionStore store, SessionTransactions transac
             }
 
             var batch = FindBatch(state, id);
-            if (!batch.Items.TryGetValue(sku, out var item))
+            if (batch.Items.Values.Any(item => item.Sku == sku && item.Channel is not null))
+            {
+                throw new DemoProblem(409, "Revise o saldo dos dois canais no painel de distribuição.");
+            }
+            if (!batch.Items.TryGetValue(sku, out var item) || item.Channel is not null)
             {
                 throw new DemoProblem(404, "Item não encontrado neste lote.");
             }
@@ -294,7 +308,7 @@ public sealed class DemoService(ISessionStore store, SessionTransactions transac
 
     private static BatchView ToView(SyncBatch batch) => new(batch.Id, batch.CreatedAt, batch.Items.Values
         .OrderBy(item => item.Sku, StringComparer.Ordinal)
-        .Select(item => new ItemView(item.Sku, item.ListingId, item.DesiredQuantity, item.Status, item.Message, [.. item.Attempts]))
+        .Select(item => new ItemView(item.Sku, item.ListingId, item.DesiredQuantity, item.Status, item.Message, [.. item.Attempts], item.Channel))
         .ToArray());
 
     private static string Fingerprint<T>(string operation, T body) =>
@@ -332,6 +346,7 @@ public sealed class DemoService(ISessionStore store, SessionTransactions transac
             new { Id = "LIST-003", Sku = "DEMO-003", Name = "Estojo de lona", Physical = 3, Reserved = 1, Remote = 6, Fault = SimulationFault.ChangeQuantityBeforeApply }
         };
 
+        AddSecondChannel(state, now);
         foreach (var seed in seeds)
         {
             state.Listings.Add(seed.Id, new Listing

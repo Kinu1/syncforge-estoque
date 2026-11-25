@@ -19,11 +19,13 @@ public sealed record DivergenceView(
     DateTimeOffset? ObservedAt, long Revision, string Status);
 public sealed record ListingLinkView(string ListingId, string Name, string? Sku, int Quantity);
 public sealed record BatchView(Guid Id, DateTimeOffset CreatedAt, ItemView[] Items);
-public sealed record ItemView(string Sku, string ListingId, int DesiredQuantity, string Status, string Message, Attempt[] Attempts);
+public sealed record ItemView(string Sku, string ListingId, int DesiredQuantity, string Status, string Message, Attempt[] Attempts, string? Channel = null);
 public sealed record Attempt(DateTimeOffset At, string Status, string Message);
 
 public static class ItemStatus
 {
+    public const string WaitingForReduction = "waitingForReduction";
+    public const string Blocked = "blocked";
     public const string Pending = "pending";
     public const string Processing = "processing";
     public const string AwaitingConfirmation = "awaitingConfirmation";
@@ -42,6 +44,7 @@ public sealed record Stock(
 public sealed class Listing
 {
     public required string Id { get; init; }
+    public string Channel { get; init; } = "A";
     public required string Name { get; init; }
     public string? Sku { get; set; }
     public int Quantity { get; set; }
@@ -68,6 +71,8 @@ public sealed class SyncItem
     public required string ListingId { get; init; }
     public required int DesiredQuantity { get; init; }
     public required long Revision { get; init; }
+    public string? Channel { get; init; }
+    public Guid? DependsOn { get; init; }
     public required long ExpectedVersion { get; init; }
     public required Guid OperationId { get; init; }
     public string Status { get; set; } = ItemStatus.Pending;
@@ -105,6 +110,7 @@ public sealed class SessionState
     public long NextRevision { get; set; }
     public Dictionary<string, Stock> Stocks { get; init; } = [];
     public Dictionary<string, Listing> Listings { get; init; } = [];
+    public Dictionary<string, AllocationPlan> Allocations { get; init; } = [];
     public Dictionary<Guid, Import> Imports { get; init; } = [];
     public Dictionary<Guid, SyncBatch> Batches { get; init; } = [];
     public Dictionary<string, IdempotencyEntry> Operations { get; init; } = [];
