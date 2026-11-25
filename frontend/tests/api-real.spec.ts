@@ -2,6 +2,35 @@ import { expect, test } from "@playwright/test"
 
 test.skip(process.env.SYNCFORGE_E2E_REAL !== "1", "Requer a operação local completa.")
 
+test("transfere duas unidades após a confirmação da redução no primeiro canal", async ({ page }) => {
+  await page.goto("/")
+  await page.getByRole("link", { name: "Distribuição", exact: true }).click()
+  await page.getByRole("button", { name: "Carregar cenário de transferência" }).click()
+  await page.getByRole("dialog").getByRole("button", { name: "Carregar e substituir" }).click()
+
+  const quantityA = page.getByRole("spinbutton", { name: "Quantidade para o canal A" })
+  const quantityB = page.getByRole("spinbutton", { name: "Quantidade para o canal B" })
+  await expect(quantityA).toHaveValue("4")
+  await expect(quantityB).toHaveValue("3")
+  await quantityB.fill("5")
+  await expect(page.getByText("A soma excede o disponível em 2 un.")).toBeVisible()
+  const submit = page.getByRole("button", { name: "Enviar distribuição" })
+  await expect(submit).toBeDisabled()
+  await quantityA.fill("2")
+  await expect(page.getByText("7 un. planejadas · 0 un. livres")).toBeVisible()
+  await submit.click()
+
+  const channelB = page.getByRole("listitem").filter({ has: page.getByRole("heading", { name: "DEMO-001 · Canal B" }) })
+  await expect(channelB.getByText("Saldo planejado de 5 un.")).toBeVisible()
+  await expect(page.getByText("2 de 2 sincronizados")).toBeVisible({ timeout: 30_000 })
+  await channelB.locator("summary").click()
+  await expect(channelB.getByRole("cell", { name: "Aguardando redução" })).toBeVisible()
+  await page.getByRole("link", { name: "Conferir saldos" }).click()
+  const observed = page.getByRole("group", { name: "Canal B", exact: true })
+  await expect(observed.locator("dd").first()).toHaveText("5")
+  await expect(page.getByRole("group", { name: "Canal A", exact: true }).locator("dd").first()).toHaveText("2")
+})
+
 test("executa o cenário misto contra a API e o worker", async ({ page }) => {
   await page.goto("/")
   await page.getByRole("button", { name: "Carregar cenário misto" }).click()
