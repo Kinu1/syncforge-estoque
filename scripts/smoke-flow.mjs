@@ -4,7 +4,8 @@ import { setTimeout as delay } from 'node:timers/promises'
 
 const args = process.argv.slice(2)
 const mixed = args.includes('--mixed')
-const base = new URL(args.find((arg) => arg !== '--mixed') ?? 'http://127.0.0.1:8080')
+const transfer = args.includes('--transfer')
+const base = new URL(args.find((arg) => !arg.startsWith('--')) ?? 'http://127.0.0.1:8080')
 
 function createClient() {
   let cookie
@@ -62,24 +63,43 @@ async function prepareStock(operator) {
 const operator = createClient()
 const started = await operator('/demo/session', { method: 'POST' })
 assert.equal(started.status, 200, JSON.stringify(started.payload))
-await prepareStock(operator)
+const expected = transfer ? ['synchronized', 'synchronized'] :
+  mixed ? ['conflict', 'synchronized', 'synchronized'] : ['synchronized']
 
-const divergences = await operator('/divergences')
-assert.equal(divergences.status, 200)
-const pending = divergences.payload.filter((row) => row.status === 'divergent')
-const expected = mixed ? ['conflict', 'synchronized', 'synchronized'] : ['synchronized']
-assert.equal(pending.length, expected.length)
-assert.equal(pending.find((row) => row.sku === 'DEMO-001').availableQuantity, 7)
-const items = pending.map(({ sku, revision, observedVersion }) => ({ sku, revision, observedVersion }))
+async function prepareBatch() {
+  if (transfer) {
+    const reset = await operator('/demo/scenario', { method: 'POST', value: { scenario: 'transfer' } })
+    assert.equal(reset.status, 204)
+    const view = await operator('/allocations')
+    assert.equal(view.status, 200)
+    const [stock] = view.payload.stocks
+    const target = (channel, quantity) => {
+      const { listingId, version } = view.payload.listings.find((row) => row.channel === channel && row.sku === stock.sku)
+      return { listingId, version, quantity }
+    }
+    return { path: '/allocations/' + stock.sku, value: { revision: stock.revision, channelA: target('A', 2), channelB: target('B', 5) } }
+  }
 
+  await prepareStock(operator)
+
+  const divergences = await operator('/divergences')
+  assert.equal(divergences.status, 200)
+  const pending = divergences.payload.filter((row) => row.status === 'divergent')
+  assert.equal(pending.length, expected.length)
+  assert.equal(pending.find((row) => row.sku === 'DEMO-001').availableQuantity, 7)
+  const items = pending.map(({ sku, revision, observedVersion }) => ({ sku, revision, observedVersion }))
+  return { path: '/sync-batches', value: { items } }
+}
+
+const { path, value } = await prepareBatch()
 const key = randomUUID()
-const created = await operator('/sync-batches', { method: 'POST', value: { items }, key })
+const created = await operator(path, { method: 'POST', value, key })
 assert.equal(created.status, 202, JSON.stringify(created.payload))
 const batchPath = '/sync-batches/' + encodeURIComponent(created.payload.id)
-const replay = await operator('/sync-batches', { method: 'POST', value: { items }, key })
+const replay = await operator(path, { method: 'POST', value, key })
 assert.equal(replay.payload?.id, created.payload.id)
 
-const deadline = Date.now() + (mixed ? 85_000 : 30_000)
+const deadline = Date.now() + (mixed || transfer ? 85_000 : 30_000)
 let result
 let statuses
 do {
@@ -96,6 +116,14 @@ const visitor = createClient()
 assert.equal((await visitor('/demo/session', { method: 'POST' })).status, 200)
 assert.equal((await visitor(batchPath)).status, 404)
 
-console.log(mixed
+if (transfer) {
+  const final = await operator('/allocations')
+  assert.equal(final.status, 200)
+  const channels = final.payload.listings.filter((item) => item.sku === 'DEMO-001')
+  assert.deepEqual(channels.map((item) => [item.channel, item.quantity]), [['A', 2], ['B', 5]])
+  const increase = result.payload.items.find((item) => item.channel === 'B')
+  assert.ok(increase.attempts.some((attempt) => attempt.status === 'waitingForReduction'))
+  console.log('Transferência confirmada após recuperar a resposta da redução. Saldos finais A = 2 e B = 5.')
+} else console.log(mixed
   ? 'Lote misto confirmado, repetição idempotente e sessões isoladas.'
   : 'Importação, confirmação do estoque, repetição idempotente e isolamento verificados.')

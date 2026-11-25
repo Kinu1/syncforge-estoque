@@ -116,4 +116,5 @@ jobs:
             --query "Stacks[0].Outputs[?OutputKey=='ApiOriginUrl'].OutputValue | [0]" --output text)
           [[ $(curl --silent --output /dev/null --write-out '%{http_code}' "${origin_url%/}/api/health") == 403 ]]
           node scripts/smoke-flow.mjs "$demo_url" --mixed
+          node scripts/smoke-flow.mjs "$demo_url" --transfer
           printf '[Demo pública](%s) · Revisão `%s`\n' "$demo_url" "$RELEASE_SHA" >> "$GITHUB_STEP_SUMMARY"
