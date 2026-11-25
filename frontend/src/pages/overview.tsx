@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog"
 import { EmptyState, ErrorNotice, Loading, PageHeading } from "@/components/operations"
 import { api } from "@/lib/api"
-import { batchKey, divergenceKey, listingKey } from "@/lib/operations"
+import { allocationKey, batchKey, divergenceKey, listingKey } from "@/lib/operations"
 
 export function Overview() {
   const navigate = useNavigate()
@@ -16,7 +16,7 @@ export function Overview() {
   const mixed = useMutation({
     mutationFn: api.loadScenario,
     async onSuccess() {
-      await Promise.all([divergenceKey, listingKey, batchKey].map((queryKey) =>
+      await Promise.all([divergenceKey, listingKey, batchKey, allocationKey].map((queryKey) =>
         queryClient.invalidateQueries({ queryKey }),
       ))
       navigate("/divergencias")
@@ -55,14 +55,14 @@ export function Overview() {
       <section aria-labelledby="stock-heading" className="rounded-xl border bg-card">
         <div className="flex flex-wrap items-center justify-between gap-3 border-b px-5 py-4">
           <div>
-            <h2 id="stock-heading" className="font-semibold tracking-tight">Estoque comparado</h2>
-            <p className="mt-0.5 text-sm text-muted-foreground">Situação dos produtos do último estoque importado.</p>
+            <h2 id="stock-heading" className="font-semibold tracking-tight">Estoque em canal único</h2>
+            <p className="mt-0.5 text-sm text-muted-foreground">Consulte os produtos repartidos entre canais em <Link className="font-medium text-primary underline" to="/distribuicao">Distribuição</Link>.</p>
           </div>
           <Button asChild variant="outline"><Link to="/divergencias">Ver divergências <ArrowRight aria-hidden="true" /></Link></Button>
         </div>
         {stock.isPending && <Loading>Consultando saldos…</Loading>}
         {stock.isError && <div className="p-5"><ErrorNotice error={stock.error} onRetry={() => void stock.refetch()} /></div>}
-        {stock.isSuccess && stock.data.length === 0 && <EmptyState title="Nenhum estoque importado" description="Importe um CSV do ERP ou carregue o cenário de demonstração." />}
+        {stock.isSuccess && stock.data.length === 0 && <EmptyState title="Nenhum produto em canal único" description="Importe um CSV do ERP ou carregue o cenário misto para comparar saldos." />}
         {stock.isSuccess && stock.data.length > 0 && (
           <div className="px-5 py-6">
             <p className="mb-3 text-sm text-muted-foreground"><strong className="font-semibold text-foreground">{stock.data.length}</strong> produtos comparados</p>

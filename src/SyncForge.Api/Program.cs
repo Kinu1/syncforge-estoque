@@ -18,6 +18,7 @@ if (Environment.GetEnvironmentVariable("ASPNETCORE_URLS") is null &&
     builder.WebHost.UseUrls("http://0.0.0.0:8080");
 }
 builder.WebHost.ConfigureKestrel(options => options.Limits.MaxRequestBodySize = 256 * 1024);
+builder.Services.Configure<RouteHandlerOptions>(options => options.ThrowOnBadRequest = false);
 builder.Services.AddProblemDetails();
 builder.Services.AddOpenApi();
 builder.Services.AddAWSLambdaHosting(LambdaEventSource.HttpApi);

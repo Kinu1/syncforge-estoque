@@ -66,6 +66,19 @@ public static class DemoEndpoints
             Results.Ok(await service.ReadDivergencesAsync(RequireCookie(http), ct)))
             .Produces<DivergenceView[]>();
 
+        routes.MapGet("/allocations", async (HttpContext http, DemoService service, CancellationToken ct) =>
+            Results.Ok(await service.ReadAllocationsAsync(RequireCookie(http), ct)))
+            .Produces<AllocationView>();
+
+        routes.MapPost("/allocations/{sku}", async (
+            HttpContext http, string sku, AllocationRequest request, DemoService service, IWorkerWake wake, CancellationToken ct) =>
+        {
+            var sessionId = RequireCookie(http);
+            var result = await service.AllocateAsync(sessionId, sku, request, ReadIdempotencyKey(http), ct);
+            await wake.NotifyAsync(sessionId, TimeSpan.Zero, ct);
+            return Results.Accepted($"/api/v1/sync-batches/{result.Id}", result);
+        }).Produces<BatchReceipt>(202).ProducesProblem(400).ProducesProblem(409).ProducesProblem(422);
+
         routes.MapGet("/listing-links", async (HttpContext http, DemoService service, CancellationToken ct) =>
             Results.Ok(await service.ReadLinksAsync(RequireCookie(http), ct)))
             .Produces<ListingLinkView[]>();

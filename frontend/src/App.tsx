@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react"
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query"
-import { ArrowDownUp, Boxes, History, LayoutGrid, Upload, Warehouse } from "lucide-react"
+import { ArrowDownUp, Boxes, History, LayoutGrid, Split, Upload, Warehouse } from "lucide-react"
 import { BrowserRouter, Link, NavLink, Route, Routes, useLocation } from "react-router"
 import { EmptyState, ErrorNotice, Loading } from "@/components/operations"
 import { Button } from "@/components/ui/button"
@@ -11,6 +11,7 @@ import { BatchDetailRoute, Batches } from "@/pages/batches"
 import { Divergences } from "@/pages/divergences"
 import { Imports } from "@/pages/imports"
 import { Overview } from "@/pages/overview"
+import { Allocations } from "@/pages/allocations"
 import "./workspace.css"
 
 const client = new QueryClient({
@@ -23,6 +24,7 @@ const nav = [
   { to: "/", label: "Visão geral", icon: LayoutGrid },
   { to: "/importacoes", label: "Importações", icon: Upload },
   { to: "/divergencias", label: "Divergências", icon: ArrowDownUp },
+  { to: "/distribuicao", label: "Distribuição", icon: Split },
   { to: "/lotes", label: "Lotes", icon: History },
 ]
 
@@ -53,7 +55,7 @@ function Workspace() {
             <span className="block text-xs text-muted-foreground">Operação de estoque</span>
           </span>
         </Link>
-        <nav aria-label="Navegação da operação" className="grid grid-cols-4 gap-1 px-2 pb-3 sm:px-4 lg:grid-cols-1 lg:gap-1.5 lg:px-4">
+        <nav aria-label="Navegação da operação" className="grid grid-cols-5 gap-1 px-2 pb-3 sm:px-4 lg:grid-cols-1 lg:gap-1.5 lg:px-4">
           {nav.map(({ to, label, icon: Icon }) => (
             <NavLink key={to} to={to} end={to === "/"} className={({ isActive }) => cn(
               "flex min-h-12 min-w-0 flex-col items-center justify-center gap-1 rounded-lg px-1 py-2 text-center text-[11px] font-medium leading-tight outline-offset-2 hover:bg-muted sm:flex-row sm:gap-2 sm:text-sm lg:justify-start lg:px-3",
@@ -67,7 +69,7 @@ function Workspace() {
           <Warehouse className="size-4 shrink-0 text-primary" aria-hidden="true" />
           <div className="text-xs leading-relaxed">
             <p className="font-semibold">Loja demonstração</p>
-            <p className="text-muted-foreground">Marketplace simulado</p>
+            <p className="text-muted-foreground">Canais simulados</p>
           </div>
         </div>
       </aside>
@@ -90,6 +92,7 @@ function Workspace() {
               <Route path="/" element={<Overview />} />
               <Route path="/importacoes" element={<Imports />} />
               <Route path="/divergencias" element={<Divergences />} />
+              <Route path="/distribuicao" element={<Allocations />} />
               <Route path="/lotes" element={<Batches />} />
               <Route path="/lotes/:batchId" element={<BatchDetailRoute />} />
               <Route path="*" element={<EmptyState title="Página inexistente" description="Abra a visão geral para acessar as telas da operação." action={<Button asChild><Link to="/">Ir para a visão geral</Link></Button>} />} />

@@ -1,6 +1,6 @@
 # SyncForge
 
-Painel full stack para comparar o estoque de um ERP com um marketplace simulado, corrigir saldos por SKU e acompanhar o resultado até a confirmação do destino.
+Painel full stack para comparar o estoque de um ERP com anúncios simulados, dividir o saldo de um SKU entre dois canais e acompanhar cada correção até a confirmação do destino.
 
 [Abra a demo na AWS](https://d2lp48f4k8ptik.cloudfront.net) · [Veja a demonstração em vídeo](docs/demo.webm)
 
@@ -24,6 +24,14 @@ Para parar o ambiente, execute `docker compose down`.
 
 Para explorar falhas, abra **Carregar cenário misto** na visão geral. O lote tem três casos. Um anúncio sincroniza normalmente, outro é atualizado apesar da resposta perdida e o terceiro fica em conflito porque o saldo mudou. O histórico identifica o resultado de cada um.
 
+## Transferir estoque entre canais
+
+1. Abra **Distribuição**, selecione **Carregar cenário de transferência** e confirme **Carregar e substituir**. O SKU começa com 12 unidades físicas, 5 reservadas e 7 publicadas, divididas em 4 no canal A e 3 no B.
+2. Informe **2 no canal A** e **5 no canal B** e escolha **Enviar distribuição**. O cenário simula a perda da resposta do canal A depois de aplicar a redução.
+3. Abra o histórico do lote. O aumento no B aguarda a confirmação de A. O worker consulta a operação original e libera o aumento. Em **Conferir saldos**, confira as quantidades finais de 2 e 5.
+
+Para usar um CSV próprio, importe o estoque, abra **Distribuição** e escolha os anúncios do SKU nos dois canais. A soma pode ser menor que o saldo do ERP. As unidades restantes ficam livres para uma distribuição futura.
+
 ## Arquitetura
 
 ```mermaid
@@ -34,7 +42,7 @@ flowchart LR
     SQS -.-> Worker["Worker .NET"]
     Schedule["EventBridge Scheduler"] -. "Recuperação na AWS" .-> Worker
     Worker --> DB
-    Worker --> Sim["Marketplace simulado"]
+    Worker --> Sim["Canais simulados A e B"]
     Sim --> DB
 ```
 
@@ -47,6 +55,7 @@ Com a aplicação em execução, rode a verificação HTTP com Node.js 24.
 ```sh
 node scripts/smoke-flow.mjs
 node scripts/smoke-flow.mjs --mixed
+node scripts/smoke-flow.mjs --transfer
 ```
 
 Para desenvolver e testar, use o SDK .NET definido em `global.json`.

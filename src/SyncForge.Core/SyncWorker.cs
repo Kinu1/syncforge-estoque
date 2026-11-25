@@ -48,7 +48,8 @@ public sealed class SimulatedMarketplace(SessionTransactions transactions) : IMa
                 listing.ObservedAt = transactions.Now;
             }
 
-            if (listing.Version != item.ExpectedVersion)
+            if (listing.Version != item.ExpectedVersion ||
+                !CanApplyAllocation(state, claim.BatchId, item, listing))
             {
                 state.MarketplaceReceipts[operationId] = MarketplaceOutcome.VersionConflict;
                 return (MarketplaceOutcome.VersionConflict, true);
@@ -65,6 +66,25 @@ public sealed class SimulatedMarketplace(SessionTransactions transactions) : IMa
             }
             return (MarketplaceOutcome.Applied, true);
         }, ct);
+
+    private static bool CanApplyAllocation(SessionState state, Guid batchId, SyncItem item, Listing listing)
+    {
+        if (item.Channel is null || item.DesiredQuantity <= listing.Quantity)
+        {
+            return true;
+        }
+
+        var plan = state.Allocations[item.Sku];
+        var otherId = item.Channel == "A" ? plan.ListingB : plan.ListingA;
+        if (!state.Listings.TryGetValue(otherId, out var other) || other.Sku != item.Sku ||
+            (long)other.Quantity + item.DesiredQuantity > state.Stocks[item.Sku].AvailableQuantity)
+        {
+            return false;
+        }
+
+        return item.DependsOn is null || state.Batches[batchId].Items.Values.Any(reduction =>
+            reduction.OperationId == item.DependsOn && reduction.Status == ItemStatus.Synchronized);
+    }
 }
 
 public sealed class SyncWorker(
@@ -165,13 +185,13 @@ public sealed class SyncWorker(
 
             if (!HasCurrentSource(current, owned))
             {
-                Finish(owned, transactions.Now, ItemStatus.Superseded, "O saldo do ERP ou o vínculo foi atualizado.");
+                Finish(current, claim.BatchId, owned, transactions.Now, ItemStatus.Superseded, "O saldo do ERP ou o vínculo foi atualizado.");
                 return (false, true);
             }
 
             if (owned.SendCount > RetryDelays.Length)
             {
-                Finish(owned, transactions.Now, ItemStatus.Failed, "As tentativas foram encerradas sem confirmação.");
+                Finish(current, claim.BatchId, owned, transactions.Now, ItemStatus.Failed, "As tentativas foram encerradas sem confirmação.");
                 return (false, true);
             }
 
@@ -213,20 +233,22 @@ public sealed class SyncWorker(
             switch (outcome)
             {
                 case MarketplaceOutcome.Applied:
-                    Finish(item, now, ItemStatus.Synchronized, confirmed
+                    Finish(state, claim.BatchId, item, now, ItemStatus.Synchronized, confirmed
                         ? "Aplicação confirmada pela consulta do ID da operação."
                         : "Saldo aplicado e confirmado pelo marketplace.");
                     break;
                 case MarketplaceOutcome.VersionConflict:
-                    Finish(item, now, ItemStatus.Conflict, "O saldo do marketplace mudou. Revise a divergência antes de enviar novamente.");
+                    Finish(state, claim.BatchId, item, now, ItemStatus.Conflict, item.Channel is null
+                        ? "O saldo do marketplace mudou. Revise a divergência antes de enviar novamente."
+                        : "Os saldos mudaram. Revise a distribuição entre os canais.");
                     break;
                 case MarketplaceOutcome.Unknown when !HasCurrentSource(state, item):
-                    Finish(item, now, ItemStatus.Superseded, "O saldo do ERP ou o vínculo foi atualizado.");
+                    Finish(state, claim.BatchId, item, now, ItemStatus.Superseded, "O saldo do ERP ou o vínculo foi atualizado.");
                     break;
                 default:
                     if (item.SendCount > RetryDelays.Length && outcome == MarketplaceOutcome.TransientFailure)
                     {
-                        Finish(item, now, ItemStatus.Failed, "O marketplace está indisponível. As tentativas foram encerradas.");
+                        Finish(state, claim.BatchId, item, now, ItemStatus.Failed, "O marketplace está indisponível. As tentativas foram encerradas.");
                         break;
                     }
 
@@ -256,21 +278,59 @@ public sealed class SyncWorker(
             claim.Item.OperationId, claim.BatchId, claim.Item.Sku, status);
     }
 
-    private static void Finish(SyncItem item, DateTimeOffset now, string status, string message)
+    private static void Finish(SessionState state, Guid batchId, SyncItem item, DateTimeOffset now, string status, string message)
     {
         item.DueAt = null;
         item.LeaseToken = null;
         item.Record(now, status, message);
+        if (item.Channel is null) return;
+
+        foreach (var waiting in state.Batches[batchId].Items.Values.Where(other =>
+            other.DependsOn == item.OperationId && other.Status == ItemStatus.WaitingForReduction))
+        {
+            if (!HasCurrentSource(state, waiting))
+            {
+                waiting.Record(now, ItemStatus.Superseded, "O estoque ou o plano mudou. Revise a distribuição.");
+            }
+            else if (status == ItemStatus.Synchronized)
+            {
+                waiting.DueAt = now;
+                waiting.Record(now, ItemStatus.Pending, $"O canal {item.Channel} confirmou a redução. Aumento liberado.");
+            }
+            else
+            {
+                waiting.Record(now, ItemStatus.Blocked, $"A redução no canal {item.Channel} terminou sem confirmação. Revise a distribuição.");
+            }
+        }
     }
 
-    public static bool HasCurrentSource(SessionState state, SyncItem item) =>
-        state.Stocks.TryGetValue(item.Sku, out var stock) && stock.Revision == item.Revision &&
-        state.Listings.TryGetValue(item.ListingId, out var listing) && listing.Sku == item.Sku;
+    public static bool HasCurrentSource(SessionState state, SyncItem item)
+    {
+        if (!state.Stocks.TryGetValue(item.Sku, out var stock) || stock.Revision != item.Revision ||
+            !state.Listings.TryGetValue(item.ListingId, out var listing) || listing.Sku != item.Sku)
+        {
+            return false;
+        }
+
+        if (!state.Allocations.TryGetValue(item.Sku, out var plan))
+        {
+            return item.Channel is null;
+        }
+
+        if (listing.Channel != item.Channel) return false;
+        return item.Channel switch
+        {
+            "A" => plan.ListingA == item.ListingId && plan.QuantityA == item.DesiredQuantity,
+            "B" => plan.ListingB == item.ListingId && plan.QuantityB == item.DesiredQuantity,
+            _ => false
+        };
+    }
 
     public static SyncItem? FindOwnedItem(SessionState state, WorkClaim claim, DateTimeOffset now)
     {
         if (state.Batches.TryGetValue(claim.BatchId, out var batch) &&
-            batch.Items.TryGetValue(claim.Item.Sku, out var item) &&
+            batch.Items.TryGetValue(claim.Item.Channel is null ? claim.Item.Sku : claim.Item.ListingId, out var item) &&
+            item.OperationId == claim.Item.OperationId &&
             item.LeaseToken == claim.LeaseToken && item.DueAt > now)
         {
             return item;
