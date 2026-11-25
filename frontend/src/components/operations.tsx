@@ -84,6 +84,8 @@ const itemTone: Record<ItemStatus, Tone> = {
   pending: "neutral",
   processing: "info",
   awaitingConfirmation: "info",
+  waitingForReduction: "info",
+  blocked: "warning",
   synchronized: "success",
   conflict: "warning",
   superseded: "neutral",
