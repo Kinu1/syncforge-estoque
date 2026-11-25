@@ -9,7 +9,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { api, type ImportPreview } from "@/lib/api"
-import { divergenceKey } from "@/lib/operations"
+import { allocationKey, divergenceKey } from "@/lib/operations"
 
 function localCaptureTime() {
   const now = new Date()
@@ -35,7 +35,7 @@ export function Imports() {
   const confirm = useMutation({
     mutationFn: api.confirmImport,
     async onSuccess() {
-      await client.invalidateQueries({ queryKey: divergenceKey })
+      await Promise.all([divergenceKey, allocationKey].map(queryKey => client.invalidateQueries({ queryKey })))
       navigate("/divergencias", { state: { notice: "Estoque importado. Confira os saldos comparados." } })
     },
   })

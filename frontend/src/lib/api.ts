@@ -30,16 +30,48 @@ export interface ListingLink {
   quantity: number
 }
 
+export type Channel = "A" | "B"
+
+export interface ChannelListing extends ListingLink {
+  channel: Channel
+  version: number
+}
+
+export interface AllocationStock {
+  sku: string
+  availableQuantity: number
+  revision: number
+  plannedA: number | null
+  plannedB: number | null
+  latestBatchId: string | null
+  active: boolean
+}
+
+export interface AllocationTarget {
+  listingId: string
+  version: number
+  quantity: number
+}
+
+export interface AllocationRequest {
+  revision: number
+  channelA: AllocationTarget
+  channelB: AllocationTarget
+}
+
 export type ItemStatus =
   | "pending"
   | "processing"
   | "awaitingConfirmation"
+  | "waitingForReduction"
+  | "blocked"
   | "synchronized"
   | "conflict"
   | "superseded"
   | "failed"
 
 export interface BatchItem {
+  channel?: Channel | null
   sku: string
   listingId: string
   desiredQuantity: number
@@ -116,6 +148,12 @@ export const api = {
     request<{ expiresAt: string }>("/demo/session", { method: "POST", signal }),
   loadScenario: () =>
     request<void>("/demo/scenario", { method: "POST", body: { scenario: "mixed" } }),
+  loadTransferScenario: () =>
+    request<void>("/demo/scenario", { method: "POST", body: { scenario: "transfer" } }),
+  allocations: (signal: AbortSignal) =>
+    request<{ stocks: AllocationStock[]; listings: ChannelListing[] }>("/allocations", { signal }),
+  allocate: (sku: string, body: AllocationRequest, idempotencyKey: string) =>
+    request<{ id: string }>("/allocations/" + enc(sku), { method: "POST", body, idempotencyKey }),
   previewImport: (csv: string, capturedAt: string) =>
     request<ImportPreview>("/imports", { method: "POST", body: { csv, capturedAt } }),
   confirmImport: (id: string) =>

@@ -11,7 +11,7 @@ import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { ApiError, api, type Divergence, type SyncSelection } from "@/lib/api"
-import { batchKey, dateTime, divergenceKey, listingKey, requestKey, type PendingRequest } from "@/lib/operations"
+import { allocationKey, batchKey, dateTime, divergenceKey, listingKey, requestKey, type PendingRequest } from "@/lib/operations"
 
 const statusNotes = {
   aligned: { label: "Alinhado", tone: "success" },
@@ -134,7 +134,7 @@ export function Divergences() {
 
   return (
     <div className="space-y-6">
-      <PageHeading title="Divergências" description="Confira o saldo disponível do ERP e selecione os anúncios que precisam de atualização." />
+      <PageHeading title="Divergências" description="Compare o estoque do ERP com os anúncios em canal único." action={<Button asChild variant="outline"><Link to="/distribuicao">Ver distribuição entre canais</Link></Button>} />
       {location.state?.notice && (
         <p role="status" className="rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-950">{location.state.notice}</p>
       )}
@@ -170,7 +170,7 @@ export function Divergences() {
         {rows.isError && <div className="p-5"><ErrorNotice error={rows.error} onRetry={() => void rows.refetch()} /></div>}
         {rows.isSuccess && visible.length === 0 && (
           rows.data.length === 0
-            ? <EmptyState title="Nenhum produto para comparar" description="Importe o estoque do ERP para iniciar a comparação." action={<Button asChild variant="outline"><Link to="/importacoes">Ir para importações</Link></Button>} />
+            ? <EmptyState title="Nenhum produto em canal único" description="Os SKUs repartidos entre canais aparecem em Distribuição." action={<Button asChild variant="outline"><Link to="/importacoes">Ir para importações</Link></Button>} />
             : <EmptyState title="Nenhum resultado" description="Ajuste a busca por SKU ou o filtro de situação." />
         )}
         {visible.length > 0 && (
@@ -242,6 +242,7 @@ export function Divergences() {
           setLinkSku(null)
           void client.invalidateQueries({ queryKey: divergenceKey })
           void client.invalidateQueries({ queryKey: listingKey })
+          void client.invalidateQueries({ queryKey: allocationKey })
         }} />
       )}
     </div>

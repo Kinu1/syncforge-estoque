@@ -3,13 +3,16 @@ import { ApiError, type ItemStatus } from "@/lib/api"
 export const divergenceKey = ["divergences"] as const
 export const listingKey = ["listings"] as const
 export const batchKey = ["batches"] as const
+export const allocationKey = ["allocations"] as const
 
-export const activeStatuses = new Set<ItemStatus>(["pending", "processing", "awaitingConfirmation"])
+export const activeStatuses = new Set<ItemStatus>(["pending", "processing", "awaitingConfirmation", "waitingForReduction"])
 
 export const statusLabel: Record<ItemStatus, string> = {
   pending: "Na fila",
   processing: "Processando",
   awaitingConfirmation: "Aguardando confirmação",
+  waitingForReduction: "Aguardando redução",
+  blocked: "Aumento bloqueado",
   synchronized: "Sincronizado",
   conflict: "Conflito",
   superseded: "Versão superada",

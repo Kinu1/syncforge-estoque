@@ -47,6 +47,60 @@ async function routeApi(page: Page, handle: (route: Route, path: string) => Prom
   })
 }
 
+test("vincula os anúncios e revisa a distribuição após uma alteração concorrente", async ({ page }) => {
+  let revision = 1
+  const keys: string[] = []
+  await routeApi(page, async (route, path) => {
+    if (path === "/allocations") {
+      await route.fulfill({ json: {
+        stocks: [{ sku: "KIT", availableQuantity: 7, revision, plannedA: null, plannedB: null, latestBatchId: null, active: false }],
+        listings: ["A", "B"].map(channel => ({
+          listingId: "KIT-" + channel, name: "Kit de canetas", sku: null, channel, quantity: 0, version: 1,
+        })),
+      } })
+    } else if (path === "/allocations/KIT") {
+      keys.push(route.request().headers()["idempotency-key"])
+      expect(route.request().postDataJSON()).toEqual({ revision,
+        channelA: { listingId: "KIT-A", quantity: 4, version: 1 },
+        channelB: { listingId: "KIT-B", quantity: 2, version: 1 },
+      })
+      if (revision === 1) {
+        revision = 2
+        await route.fulfill({ status: 409, json: { detail: "O estoque mudou." } })
+      } else {
+        await route.fulfill({ status: 202, json: { id: "lote-canais" } })
+      }
+    } else if (path === "/sync-batches/lote-canais") {
+      await route.fulfill({ json: { id: "lote-canais", createdAt: capturedAt, items: [] } })
+    } else {
+      await route.fulfill({ status: 404 })
+    }
+  })
+
+  await page.goto("/distribuicao")
+  for (const attempt of [1, 2]) {
+    for (const [channel, quantity] of [["A", "4"], ["B", "2"]]) {
+      await page.getByRole("combobox", { name: "Anúncio do canal " + channel }).click()
+      await page.getByRole("option", { name: "Kit de canetas · KIT-" + channel }).click()
+      await page.getByRole("spinbutton", { name: "Quantidade para o canal " + channel }).fill(quantity)
+    }
+    await expect(page.getByText("6 un. planejadas · 1 un. livres")).toBeVisible()
+    if (attempt === 1) {
+      expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([])
+    }
+    await page.getByRole("button", { name: "Enviar distribuição" }).click()
+    if (attempt === 1) {
+      await expect(page.getByText("O estoque mudou.")).toBeVisible()
+      await expect(page.getByRole("button", { name: "Enviar distribuição" })).toBeDisabled()
+      await page.getByRole("button", { name: "Atualizar saldos e revisar" }).click()
+    }
+  }
+  await expect(page).toHaveURL(/\/lotes\/lote-canais$/)
+  expect(keys).toHaveLength(2)
+  expect(keys.every(Boolean)).toBe(true)
+  expect(keys[0]).not.toBe(keys[1])
+})
+
 test("valida e confirma o arquivo de estoque, com correção de linhas inválidas", async ({ page }) => {
   let confirmed = false
   const previewRow = {
@@ -130,7 +184,7 @@ test("carrega o cenário, envia seleção e detalha um lote parcial", async ({ p
   })
 
   await page.goto("/")
-  await expect(page.getByText("Nenhum estoque importado")).toBeVisible()
+  await expect(page.getByText("Nenhum produto em canal único")).toBeVisible()
   await page.screenshot({ path: testInfo.outputPath("visao-geral.png"), fullPage: true })
   await page.getByRole("button", { name: "Carregar cenário misto" }).click()
   const dialog = page.getByRole("dialog")

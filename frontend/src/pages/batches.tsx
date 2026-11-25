@@ -6,7 +6,7 @@ import { EmptyState, ErrorNotice, ItemBadge, Loading, PageHeading, StatusBadge }
 import { Button } from "@/components/ui/button"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { api, type BatchItem } from "@/lib/api"
-import { activeStatuses, batchKey, dateTime, divergenceKey, requestKey, statusLabel, type PendingRequest } from "@/lib/operations"
+import { activeStatuses, allocationKey, batchKey, dateTime, divergenceKey, requestKey, statusLabel, type PendingRequest } from "@/lib/operations"
 
 function batchSummary(items: BatchItem[]) {
   const active = items.some(({ status }) => activeStatuses.has(status))
@@ -90,6 +90,7 @@ function BatchDetail({ batchId }: { batchId: string }) {
 
   const items = batch.data?.items ?? []
   const summary = batchSummary(items)
+  const distributed = items.some(item => item.channel)
 
   return (
     <div className="space-y-6">
@@ -106,24 +107,27 @@ function BatchDetail({ batchId }: { batchId: string }) {
                 {summary.synchronized} de {items.length} sincronizados {summary.active && "· processamento em andamento"}
               </p>
             </div>
-            <Button asChild variant="outline" onClick={() => void client.invalidateQueries({ queryKey: divergenceKey })}>
-              <Link to="/divergencias"><ListFilter aria-hidden="true" /> Conferir saldos</Link>
+            <Button asChild variant="outline" onClick={() => void client.invalidateQueries({ queryKey: distributed ? allocationKey : divergenceKey })}>
+              <Link to={distributed ? "/distribuicao" : "/divergencias"}><ListFilter aria-hidden="true" /> Conferir saldos</Link>
             </Button>
           </div>
           {retry.isError && <div className="px-5 pt-4"><ErrorNotice error={retry.error} /></div>}
           {items.length === 0 && <EmptyState title="Lote sem itens" description="As atualizações aparecerão aqui quando forem registradas." />}
           <ul className="divide-y">
             {items.map((item) => (
-              <li key={item.sku} className="px-5 py-4">
+              <li key={item.sku + "/" + item.listingId} className="px-5 py-4">
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div className="min-w-0">
-                    <h3 className="font-mono text-sm font-semibold">{item.sku}</h3>
-                    <p className="mt-1 text-sm text-muted-foreground">Saldo enviado: {item.desiredQuantity} un.</p>
+                    <h3 className="font-mono text-sm font-semibold">{item.sku}{item.channel && " · Canal " + item.channel}</h3>
+                    <p className="mt-1 text-sm text-muted-foreground">Saldo planejado de {item.desiredQuantity} un.</p>
                     {item.message && <p className="mt-1 break-words text-sm">{item.message}</p>}
                   </div>
                   <div className="flex flex-wrap items-center gap-2.5">
                     <ItemBadge status={item.status} />
-                    {item.status === "failed" && (
+                    {item.channel && ["failed", "blocked", "conflict", "superseded"].includes(item.status) && (
+                      <Button asChild size="sm" variant="outline"><Link to={"/distribuicao?sku=" + encodeURIComponent(item.sku)}>Revisar distribuição</Link></Button>
+                    )}
+                    {!item.channel && item.status === "failed" && (
                       <Button size="sm" variant="outline" onClick={() => retry.mutate(item.sku)} disabled={retry.isPending}>
                         <RotateCcw aria-hidden="true" /> {retry.isPending && retry.variables === item.sku ? "Reprocessando…" : "Reprocessar"}
                         <span className="sr-only"> {item.sku}</span>
